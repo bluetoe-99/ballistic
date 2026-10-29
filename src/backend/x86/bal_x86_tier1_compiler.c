@@ -1732,7 +1732,43 @@ translate_ldr(bal_tier1_compiler_t                     *compiler,
     {
         const uint32_t size_bits = (instruction >> 30) & 0x3U;
 
-        if (0U == size_bits)
+        // The 'S' as the fourth mnemonic character marks the signed loads; every
+        // other scalar load routed here (LDR, LDRB, LDRH, LDRAA/LDRAB) zero-extends.
+        const bool is_signed_load = 'L' == metadata->name[0] && 'D' == metadata->name[1]
+                                    && 'R' == metadata->name[2] && 'S' == metadata->name[3];
+
+        if (true == is_signed_load)
+        {
+            // Per the vendored spec these sign-extend to 32 or 64 bits (LDRSW always
+            // 64): shift the loaded sign into bit 63 and restore it with an arithmetic
+            // right shift; instruction bits 31-30 give the access size, 1, 2, or 4.
+            const uint64_t        extend_shift = 64ULL - (8ULL << size_bits);
+            const bal_x86_macro_t sign_extend_macro = {
+                .opcode              = BAL_X86_MACRO_SHL_REGISTER_IMMEDIATE,
+                .destination         = BAL_X86_RAX,
+                .immediate_or_offset = extend_shift,
+            };
+            bal_sliding_window_push(&compiler->window, sign_extend_macro);
+
+            const bal_x86_macro_t restore_macro = {
+                .opcode              = BAL_X86_MACRO_SAR_REGISTER_IMMEDIATE,
+                .destination         = BAL_X86_RAX,
+                .immediate_or_offset = extend_shift,
+            };
+            bal_sliding_window_push(&compiler->window, restore_macro);
+
+            if (false == is_64bit)
+            {
+                // W destination: the sign extension stops at bit 31, as on the 32-bit LDR path.
+                const bal_x86_macro_t zero_extend_macro = {
+                    .opcode      = BAL_X86_MACRO_MOV_REGISTER_REGISTER_32,
+                    .destination = BAL_X86_RAX,
+                    .source      = BAL_X86_RAX,
+                };
+                bal_sliding_window_push(&compiler->window, zero_extend_macro);
+            }
+        }
+        else if (0U == size_bits)
         {
             // LDRB: mask to 1 byte.
             const bal_x86_macro_t mask_macro = {
