@@ -12,7 +12,9 @@ extern "C"
 {
 #endif // __cplusplus
 
-    typedef uint64_t (*bal_cpu_guest_read_function_t)(void *context, uint64_t guest_address);
+    typedef uint64_t (*bal_cpu_guest_read_function_t)(void *context,
+                                                      uint64_t guest_address,
+                                                      uint64_t read_size);
 
     BAL_ALIGNED(64) typedef struct
     {
@@ -33,7 +35,8 @@ extern "C"
         /// This only increments if the engine flag [`BAL_ENGINE_FLAG_INSTRUCTION_COUNTING`] is set.
         uint64_t instruction_count;
 
-        /// Reads 8 bytes from guest memory.
+        /// Reads read_size bytes (1, 2, 4, or 8) from guest memory, zero-extending
+        /// to 64 bits. Faults only when the accessed bytes are unreadable.
         bal_cpu_guest_read_function_t guest_read;
 
         /// Opaque context passed as the first context to [`bal_cpu_guest_read_function_t`].
