@@ -47,6 +47,7 @@ target_link_libraries(test_bal_assembler_sub PUBLIC BallisticTestAssemblerFixtur
 add_ballistic_test(test_bal_decoder_integrity unit/bal_decoder/test_bal_decoder_integrity.c)
 
 add_ballistic_test(test_bal_tier1_orr unit/bal_tier1/test_bal_tier1_orr.c)
+add_ballistic_test(test_bal_tier1_and unit/bal_tier1/test_bal_tier1_and.c)
 
 add_ballistic_test(test_bal_jit_debug_lifecycle unit/bal_jit_debug/test_bal_jit_debug_lifecycle.c)
 add_ballistic_test(test_bal_jit_debug_add_block unit/bal_jit_debug/test_bal_jit_debug_add_block.c)

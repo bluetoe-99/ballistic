@@ -94,6 +94,12 @@ static void translate_or_reg(bal_tier1_compiler_t                     *compiler,
                              const bal_decoder_instruction_metadata_t *metadata,
                              uint32_t                                  instruction);
 
+static void push_shift_macro(bal_tier1_compiler_t *compiler,
+                             bal_x86_register_t    x86_register,
+                             uint32_t              shift_amount,
+                             uint32_t              shift_type,
+                             const bool            is_32bit);
+
 static void translate_ldr(bal_tier1_compiler_t                     *compiler,
                           const bal_decoder_instruction_metadata_t *metadata,
                           uint32_t                                  instruction);
@@ -1363,6 +1369,7 @@ translate_and_reg(bal_tier1_compiler_t *BAL_RESTRICT                     compile
 
     const bool is_setting_flags = 'S' == metadata->name[3];
     const bool is_zero_register = 31 == rd;
+    const bool is_32bit         = BAL_OPERAND_TYPE_REGISTER_32 == operands[1].type;
 
     // AND targeting the zero register doesn't alter the state.
     if (is_zero_register && !is_setting_flags)
@@ -1375,6 +1382,45 @@ translate_and_reg(bal_tier1_compiler_t *BAL_RESTRICT                     compile
         BAL_LOG_ERROR(
             &bal_thread_logger, "Aborting function: unsupported shift type %u", shift_type);
         compiler->status = BAL_ERROR_UNKNOWN_INSTRUCTION;
+        return;
+    }
+
+    if (is_setting_flags && (is_32bit || 31U == rn || 31U == rm))
+    {
+        BAL_LOG_ERROR(&bal_thread_logger,
+                      "Aborting function: unsupported flag-setting form of AND");
+        compiler->status = BAL_ERROR_UNKNOWN_INSTRUCTION;
+        return;
+    }
+
+    if (is_32bit && (shift_amount > 31U || 0b11 == shift_type))
+    {
+        BAL_LOG_ERROR(&bal_thread_logger,
+                      "Aborting function: unsupported shift for 32-bit AND: type %u amount %u",
+                      shift_type,
+                      shift_amount);
+        compiler->status = BAL_ERROR_UNKNOWN_INSTRUCTION;
+        return;
+    }
+
+    if (31U == rn || 31U == rm)
+    {
+        const bool               skip_load_rd = true;
+        const bal_x86_register_t x86_rd       = allocate_x86_register(compiler, rd, skip_load_rd);
+
+        if (BAL_UNLIKELY(BAL_X86_INVALID == x86_rd))
+        {
+            compiler->status = BAL_ERROR_INCORRECT_REGISTER_TYPE;
+            return;
+        }
+
+        const bal_x86_macro_t mov_macro = {
+            .opcode              = BAL_X86_MACRO_MOV_REGISTER_IMMEDIATE,
+            .destination         = x86_rd,
+            .immediate_or_offset = 0ULL,
+        };
+        bal_sliding_window_push(&compiler->window, mov_macro);
+        compiler->is_dirty |= 1U << rd;
         return;
     }
 
@@ -1402,20 +1448,6 @@ translate_and_reg(bal_tier1_compiler_t *BAL_RESTRICT                     compile
 
     if (shift_amount > 0)
     {
-        bal_x86_macro_opcode_t shift_opcode = BAL_X86_MACRO_SHL_REGISTER_IMMEDIATE;
-
-        if (0b01 == shift_type)
-        {
-            shift_opcode = BAL_X86_MACRO_SHR_REGISTER_IMMEDIATE;
-        }
-        else if (0b10 == shift_type)
-        {
-            shift_opcode = BAL_X86_MACRO_SAR_REGISTER_IMMEDIATE;
-        }
-        else if (0b11 == shift_type)
-        {
-            shift_opcode = BAL_X86_MACRO_ROR_REGISTER_IMMEDIATE;
-        }
         if (rd != rm || is_zero_register)
         {
             const bal_x86_macro_t mov_macro = {
@@ -1427,12 +1459,7 @@ translate_and_reg(bal_tier1_compiler_t *BAL_RESTRICT                     compile
             x86_operand2 = BAL_X86_REGISTER_DISCARD_RESULT;
         }
 
-        const bal_x86_macro_t shift_macro = {
-            .opcode              = shift_opcode,
-            .destination         = x86_operand2,
-            .immediate_or_offset = shift_amount,
-        };
-        bal_sliding_window_push(&compiler->window, shift_macro);
+        push_shift_macro(compiler, x86_operand2, shift_amount, shift_type, is_32bit);
     }
 
     if (is_zero_register)
@@ -1471,6 +1498,16 @@ translate_and_reg(bal_tier1_compiler_t *BAL_RESTRICT                     compile
         };
         bal_sliding_window_push(&compiler->window, and_macro);
         compiler->is_dirty |= 1U << rd;
+
+        if (is_32bit)
+        {
+            const bal_x86_macro_t extend_macro = {
+                .opcode      = BAL_X86_MACRO_MOV_REGISTER_REGISTER_32,
+                .destination = x86_rd,
+                .source      = x86_rd,
+            };
+            bal_sliding_window_push(&compiler->window, extend_macro);
+        }
     }
 
     if (is_setting_flags)
@@ -1509,8 +1546,40 @@ static void
 push_shift_macro(bal_tier1_compiler_t *compiler,
                  bal_x86_register_t    x86_register,
                  uint32_t              shift_amount,
-                 uint32_t              shift_type)
+                 uint32_t              shift_type,
+                 const bool            is_32bit)
 {
+    if (is_32bit)
+    {
+        if (0b10 == shift_type)
+        {
+            const bal_x86_macro_t align_macro = {
+                .opcode              = BAL_X86_MACRO_SHL_REGISTER_IMMEDIATE,
+                .destination         = x86_register,
+                .immediate_or_offset = 32ULL,
+            };
+            bal_sliding_window_push(&compiler->window, align_macro);
+
+            const bal_x86_macro_t sign_macro = {
+                .opcode              = BAL_X86_MACRO_SAR_REGISTER_IMMEDIATE,
+                .destination         = x86_register,
+                .immediate_or_offset = shift_amount + 32ULL,
+            };
+            bal_sliding_window_push(&compiler->window, sign_macro);
+            return;
+        }
+
+        if (0b01 == shift_type)
+        {
+            const bal_x86_macro_t extend_macro = {
+                .opcode      = BAL_X86_MACRO_MOV_REGISTER_REGISTER_32,
+                .destination = x86_register,
+                .source      = x86_register,
+            };
+            bal_sliding_window_push(&compiler->window, extend_macro);
+        }
+    }
+
     bal_x86_macro_opcode_t shift_opcode = BAL_X86_MACRO_SHL_REGISTER_IMMEDIATE;
 
     if (0b01 == shift_type)
@@ -1555,6 +1624,18 @@ translate_or_reg(bal_tier1_compiler_t *BAL_RESTRICT                     compiler
     {
         BAL_LOG_ERROR(
             &bal_thread_logger, "Aborting function: unsupported shift type %u", shift_type);
+        compiler->status = BAL_ERROR_UNKNOWN_INSTRUCTION;
+        return;
+    }
+
+    const bool is_32bit = BAL_OPERAND_TYPE_REGISTER_32 == operands[1].type;
+
+    if (is_32bit && (shift_amount > 31U || 0b11 == shift_type))
+    {
+        BAL_LOG_ERROR(&bal_thread_logger,
+                      "Aborting function: unsupported shift for 32-bit ORR: type %u amount %u",
+                      shift_type,
+                      shift_amount);
         compiler->status = BAL_ERROR_UNKNOWN_INSTRUCTION;
         return;
     }
@@ -1616,7 +1697,8 @@ translate_or_reg(bal_tier1_compiler_t *BAL_RESTRICT                     compiler
         if (x86_rd != x86_rn)
         {
             const bal_x86_macro_t mov_macro = {
-                .opcode      = BAL_X86_MACRO_MOV_REGISTER_REGISTER,
+                .opcode = is_32bit ? BAL_X86_MACRO_MOV_REGISTER_REGISTER_32
+                                   : BAL_X86_MACRO_MOV_REGISTER_REGISTER,
                 .destination = x86_rd,
                 .source      = x86_rn,
             };
@@ -1640,10 +1722,11 @@ translate_or_reg(bal_tier1_compiler_t *BAL_RESTRICT                     compiler
                 };
                 bal_sliding_window_push(&compiler->window, copy_macro);
                 push_shift_macro(compiler, BAL_X86_REGISTER_DISCARD_RESULT, shift_amount,
-                                 shift_type);
+                                 shift_type, is_32bit);
 
                 const bal_x86_macro_t result_macro = {
-                    .opcode      = BAL_X86_MACRO_MOV_REGISTER_REGISTER,
+                    .opcode = is_32bit ? BAL_X86_MACRO_MOV_REGISTER_REGISTER_32
+                                       : BAL_X86_MACRO_MOV_REGISTER_REGISTER,
                     .destination = x86_rd,
                     .source      = BAL_X86_REGISTER_DISCARD_RESULT,
                 };
@@ -1651,13 +1734,24 @@ translate_or_reg(bal_tier1_compiler_t *BAL_RESTRICT                     compiler
             }
             else
             {
-                push_shift_macro(compiler, x86_rm, shift_amount, shift_type);
+                push_shift_macro(compiler, x86_rm, shift_amount, shift_type, is_32bit);
+
+                if (is_32bit)
+                {
+                    const bal_x86_macro_t extend_macro = {
+                        .opcode      = BAL_X86_MACRO_MOV_REGISTER_REGISTER_32,
+                        .destination = x86_rd,
+                        .source      = x86_rd,
+                    };
+                    bal_sliding_window_push(&compiler->window, extend_macro);
+                }
             }
         }
         else if (x86_rd != x86_rm)
         {
             const bal_x86_macro_t mov_macro = {
-                .opcode      = BAL_X86_MACRO_MOV_REGISTER_REGISTER,
+                .opcode = is_32bit ? BAL_X86_MACRO_MOV_REGISTER_REGISTER_32
+                                   : BAL_X86_MACRO_MOV_REGISTER_REGISTER,
                 .destination = x86_rd,
                 .source      = x86_rm,
             };
@@ -1683,7 +1777,7 @@ translate_or_reg(bal_tier1_compiler_t *BAL_RESTRICT                     compiler
             x86_operand2 = BAL_X86_REGISTER_DISCARD_RESULT;
         }
 
-        push_shift_macro(compiler, x86_operand2, shift_amount, shift_type);
+        push_shift_macro(compiler, x86_operand2, shift_amount, shift_type, is_32bit);
     }
 
     bal_x86_register_t x86_or_source = x86_operand2;
@@ -1709,6 +1803,16 @@ translate_or_reg(bal_tier1_compiler_t *BAL_RESTRICT                     compiler
     };
     bal_sliding_window_push(&compiler->window, or_macro);
     compiler->is_dirty |= 1U << rd;
+
+    if (is_32bit)
+    {
+        const bal_x86_macro_t extend_macro = {
+            .opcode      = BAL_X86_MACRO_MOV_REGISTER_REGISTER_32,
+            .destination = x86_rd,
+            .source      = x86_rd,
+        };
+        bal_sliding_window_push(&compiler->window, extend_macro);
+    }
 }
 
 void

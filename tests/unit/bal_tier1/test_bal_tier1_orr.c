@@ -16,6 +16,10 @@
 #define ORR_X8_X9_XZR 0xAA1F0128U
 #define ORR_X8_XZR_XZR 0xAA1F03E8U
 #define ORR_X8_XZR_X8_LSL4 0xAA0813E8U
+/* ORR W8, W9, W10 */
+#define ORR_W8_W9_W10 0x2A0A0128U
+/* ORR W8, W9, W10, LSL #4 */
+#define ORR_W8_W9_W10_LSL4 0x2A0A1128U
 
 static uint32_t bal_test_guest_memory[TEST_GUEST_MEMORY_SIZE / sizeof(uint32_t)];
 
@@ -174,6 +178,32 @@ test_BalTier1Orr_ZeroRegisterSourceShiftOfDestinationItself(void)
     TEST_ASSERT_EQUAL_HEX64(0x0000000000000FF0ULL, cpu.x[8]);
 }
 
+static void
+test_BalTier1Orr_ThirtyTwoBitResultClearsUpperHalf(void)
+{
+    bal_cpu_t cpu = {};
+    cpu.x[8]      = 0xDEADBEEFDEADBEEFULL;
+    cpu.x[9]      = 0xFFFFFFFFFFFFFFFFULL;
+    cpu.x[10]     = 0xDEAD00000000FFFFULL;
+
+    run_single_guest_instruction(ORR_W8_W9_W10, &cpu);
+
+    TEST_ASSERT_EQUAL_HEX64(0x00000000FFFFFFFFULL, cpu.x[8]);
+}
+
+static void
+test_BalTier1Orr_ThirtyTwoBitLeftShiftIgnoresUpperHalf(void)
+{
+    bal_cpu_t cpu = {};
+    cpu.x[8]      = 0xDEADBEEFDEADBEEFULL;
+    cpu.x[9]      = 0xFFFFFFFF00000000ULL;
+    cpu.x[10]     = 0x000000FF000000F0ULL;
+
+    run_single_guest_instruction(ORR_W8_W9_W10_LSL4, &cpu);
+
+    TEST_ASSERT_EQUAL_HEX64(0x0000000000000F00ULL, cpu.x[8]);
+}
+
 int
 main(void)
 {
@@ -187,6 +217,8 @@ main(void)
     RUN_TEST(test_BalTier1Orr_SecondSourceZeroRegisterKeepsFirstOperand);
     RUN_TEST(test_BalTier1Orr_BothSourcesZeroRegisterClearDestination);
     RUN_TEST(test_BalTier1Orr_ZeroRegisterSourceShiftOfDestinationItself);
+    RUN_TEST(test_BalTier1Orr_ThirtyTwoBitResultClearsUpperHalf);
+    RUN_TEST(test_BalTier1Orr_ThirtyTwoBitLeftShiftIgnoresUpperHalf);
     return UNITY_END();
 }
 
