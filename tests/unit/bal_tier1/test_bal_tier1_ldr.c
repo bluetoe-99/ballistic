@@ -31,6 +31,17 @@
 /* LDRH X1, [X0] (halfword, zero offset) */
 #define LDRH_X1_X0_U0 0x79400001U
 
+/* Signed loads (LDRSB/LDRSH/LDRSW): sign-extend per the vendored spec. */
+#define LDRSB_X1_X0_U1536     0x39980001U /* LDRSB X1, [X0, #1536] */
+#define LDRSB_W1_X0_U1536     0x39D80001U /* LDRSB W1, [X0, #1536] */
+#define LDRSB_X1_X0_U1537     0x39980401U /* LDRSB X1, [X0, #1537] (positive byte) */
+#define LDRSH_X1_X0_U1540     0x798C0801U /* LDRSH X1, [X0, #1540] */
+#define LDRSH_W1_X0_U1540     0x79CC0801U /* LDRSH W1, [X0, #1540] */
+#define LDRSH_X2_X0_U1544     0x798C1002U /* LDRSH X2, [X0, #1544] (positive halfword) */
+#define LDRSW_X1_X0_U1548     0xB9860C01U /* LDRSW X1, [X0, #1548] */
+#define LDRSW_X3_X0_U1552     0xB9861003U /* LDRSW X3, [X0, #1552] (positive word) */
+#define LDRSB_X1_X0_P32_PRE   0x38820C01U /* LDRSB X1, [X0, #32]! (unscaled, pre-index) */
+
 static uint32_t bal_test_guest_memory[TEST_GUEST_MEMORY_SIZE / sizeof(uint32_t)];
 
 static void
@@ -60,6 +71,13 @@ setUp(void)
     set_u64(0xBF8U, 0xF300F300F300F300ULL);
     set_u32(0x8FCU, 0xAB112233U);
     set_u64(0xFF8U, 0x1122334455667788ULL); // last 8 bytes of the region
+
+    // Negative-pattern markers for the signed loads (bit 7/15/31 set).
+    set_u32(0x600U, 0x112233E0U); // byte 0xE0 at 0x600 (negative), 0x33 at 0x601 (positive)
+    set_u32(0x604U, 0x0000F300U); // halfword 0xF300 at 0x604 (negative)
+    set_u32(0x608U, 0x00001234U); // halfword 0x1234 at 0x608 (positive)
+    set_u32(0x60CU, 0xB98001E0U); // word with bit 31 set (value of a fuzzer seed)
+    set_u32(0x610U, 0x11223344U); // word with bit 31 clear (positive)
 }
 
 void
@@ -348,6 +366,89 @@ test_BalTier1Ldr_ReadCrossingRegionEndStillFaults(void)
                       run_single_guest_instruction_status(LDR_X1_X0_U0, &cpu));
 }
 
+static void
+test_BalTier1Ldr_ByteSignedExtendsTo64Bits(void)
+{
+    bal_cpu_t cpu  = {};
+    cpu.x[0]       = 0x000ULL;
+
+    run_single_guest_instruction(LDRSB_X1_X0_U1536, &cpu);
+
+    TEST_ASSERT_EQUAL_HEX64(0xFFFFFFFFFFFFFFE0ULL, cpu.x[1]);
+}
+
+static void
+test_BalTier1Ldr_ByteSignedWDestinationKeepsUpper32Zero(void)
+{
+    bal_cpu_t cpu  = {};
+    cpu.x[0]       = 0x000ULL;
+
+    run_single_guest_instruction(LDRSB_W1_X0_U1536, &cpu);
+
+    TEST_ASSERT_EQUAL_HEX64(0x00000000FFFFFFE0ULL, cpu.x[1]);
+}
+
+static void
+test_BalTier1Ldr_HalfwordSignedExtendsTo64Bits(void)
+{
+    bal_cpu_t cpu  = {};
+    cpu.x[0]       = 0x000ULL;
+
+    run_single_guest_instruction(LDRSH_X1_X0_U1540, &cpu);
+
+    TEST_ASSERT_EQUAL_HEX64(0xFFFFFFFFFFFFF300ULL, cpu.x[1]);
+}
+
+static void
+test_BalTier1Ldr_HalfwordSignedWDestinationKeepsUpper32Zero(void)
+{
+    bal_cpu_t cpu  = {};
+    cpu.x[0]       = 0x000ULL;
+
+    run_single_guest_instruction(LDRSH_W1_X0_U1540, &cpu);
+
+    TEST_ASSERT_EQUAL_HEX64(0x00000000FFFFF300ULL, cpu.x[1]);
+}
+
+static void
+test_BalTier1Ldr_SignedWordExtendsTo64Bits(void)
+{
+    bal_cpu_t cpu  = {};
+    cpu.x[0]       = 0x000ULL;
+
+    run_single_guest_instruction(LDRSW_X1_X0_U1548, &cpu);
+
+    TEST_ASSERT_EQUAL_HEX64(0xFFFFFFFFB98001E0ULL, cpu.x[1]);
+}
+
+static void
+test_BalTier1Ldr_SignedLoadsLeavePositiveValuesUnchanged(void)
+{
+    bal_cpu_t cpu  = {};
+    cpu.x[0]       = 0x000ULL;
+
+    run_single_guest_instruction(LDRSB_X1_X0_U1537, &cpu);
+    TEST_ASSERT_EQUAL_HEX64(0x33ULL, cpu.x[1]);
+
+    run_single_guest_instruction(LDRSH_X2_X0_U1544, &cpu);
+    TEST_ASSERT_EQUAL_HEX64(0x1234ULL, cpu.x[2]);
+
+    run_single_guest_instruction(LDRSW_X3_X0_U1552, &cpu);
+    TEST_ASSERT_EQUAL_HEX64(0x11223344ULL, cpu.x[3]);
+}
+
+static void
+test_BalTier1Ldr_ByteSignedPreIndexSignExtendsAndWritesBack(void)
+{
+    bal_cpu_t cpu  = {};
+    cpu.x[0]       = 0x5E0ULL;
+
+    run_single_guest_instruction(LDRSB_X1_X0_P32_PRE, &cpu);
+
+    TEST_ASSERT_EQUAL_HEX64(0xFFFFFFFFFFFFFFE0ULL, cpu.x[1]);
+    TEST_ASSERT_EQUAL_HEX64(0x600ULL, cpu.x[0]);
+}
+
 int
 main(void)
 {
@@ -373,6 +474,13 @@ main(void)
     RUN_TEST(test_BalTier1Ldr_ByteAtLastByteOfRegionSucceedsWhereWiderReadWouldNot);
     RUN_TEST(test_BalTier1Ldr_HalfwordReadCrossingRegionEndFaults);
     RUN_TEST(test_BalTier1Ldr_ReadCrossingRegionEndStillFaults);
+    RUN_TEST(test_BalTier1Ldr_ByteSignedExtendsTo64Bits);
+    RUN_TEST(test_BalTier1Ldr_ByteSignedWDestinationKeepsUpper32Zero);
+    RUN_TEST(test_BalTier1Ldr_HalfwordSignedExtendsTo64Bits);
+    RUN_TEST(test_BalTier1Ldr_HalfwordSignedWDestinationKeepsUpper32Zero);
+    RUN_TEST(test_BalTier1Ldr_SignedWordExtendsTo64Bits);
+    RUN_TEST(test_BalTier1Ldr_SignedLoadsLeavePositiveValuesUnchanged);
+    RUN_TEST(test_BalTier1Ldr_ByteSignedPreIndexSignExtendsAndWritesBack);
 
     return UNITY_END();
 }
