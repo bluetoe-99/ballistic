@@ -24,6 +24,12 @@
 #define LDRH_W1_X0_U1020 0x794FF801U
 #define LDR_X1_X0_U8 0xF9400401U
 #define LDR_W1_X0_U4 0xB9400401U
+/* LDR X1, [X0] (64-bit, zero offset) */
+#define LDR_X1_X0_U0 0xF9400001U
+/* LDRB X1, [X0] (byte, zero offset) */
+#define LDRB_X1_X0_U0 0x39400001U
+/* LDRH X1, [X0] (halfword, zero offset) */
+#define LDRH_X1_X0_U0 0x79400001U
 
 static uint32_t bal_test_guest_memory[TEST_GUEST_MEMORY_SIZE / sizeof(uint32_t)];
 
@@ -53,6 +59,7 @@ setUp(void)
     set_u64(0x500U, 0x0000000012345678ULL);
     set_u64(0xBF8U, 0xF300F300F300F300ULL);
     set_u32(0x8FCU, 0xAB112233U);
+    set_u64(0xFF8U, 0x1122334455667788ULL); // last 8 bytes of the region
 }
 
 void
@@ -60,8 +67,8 @@ tearDown(void)
 {
 }
 
-static void
-run_single_guest_instruction(const uint32_t instruction, bal_cpu_t *BAL_RESTRICT cpu)
+static bal_error_t
+run_single_guest_instruction_status(const uint32_t instruction, bal_cpu_t *BAL_RESTRICT cpu)
 {
     bal_test_guest_memory[0] = instruction;
     bal_test_guest_memory[1] = ARM64_RET_ENCODING;
@@ -88,7 +95,13 @@ run_single_guest_instruction(const uint32_t instruction, bal_cpu_t *BAL_RESTRICT
     bal_engine_destroy(&engine);
     (void)bal_flat_translation_interface_destroy(&allocator, &memory_interface);
 
-    TEST_ASSERT_EQUAL(BAL_SUCCESS, run_status);
+    return run_status;
+}
+
+static void
+run_single_guest_instruction(const uint32_t instruction, bal_cpu_t *BAL_RESTRICT cpu)
+{
+    TEST_ASSERT_EQUAL(BAL_SUCCESS, run_single_guest_instruction_status(instruction, cpu));
 }
 
 static void
@@ -292,6 +305,49 @@ test_BalTier1Ldr_WordUnsignedOffsetScalesByAccessSize(void)
     TEST_ASSERT_EQUAL_HEX64(0x400ULL, cpu32.x[0]);
 }
 
+static void
+test_BalTier1Ldr_ReadEndingExactlyAtRegionEndSucceeds(void)
+{
+    bal_cpu_t cpu  = {};
+    cpu.x[0]       = 0xFF8ULL; // 8 readable bytes ending flush with the region end
+
+    run_single_guest_instruction(LDR_X1_X0_U0, &cpu);
+
+    TEST_ASSERT_EQUAL_HEX64(0x1122334455667788ULL, cpu.x[1]);
+}
+
+static void
+test_BalTier1Ldr_ByteAtLastByteOfRegionSucceedsWhereWiderReadWouldNot(void)
+{
+    bal_cpu_t cpu  = {};
+    cpu.x[0]       = 0xFFFULL; // only 1 byte readable
+
+    run_single_guest_instruction(LDRB_X1_X0_U0, &cpu);
+
+    TEST_ASSERT_EQUAL_HEX64(0x11ULL, cpu.x[1]); // byte 0xFFF holds the most significant byte
+    TEST_ASSERT_EQUAL_HEX64(0xFFFULL, cpu.x[0]);
+}
+
+static void
+test_BalTier1Ldr_HalfwordReadCrossingRegionEndFaults(void)
+{
+    bal_cpu_t cpu  = {};
+    cpu.x[0]       = 0xFFFULL; // 1 byte readable, 2 requested
+
+    TEST_ASSERT_EQUAL(BAL_ERROR_MEMORY_FAULT,
+                      run_single_guest_instruction_status(LDRH_X1_X0_U0, &cpu));
+}
+
+static void
+test_BalTier1Ldr_ReadCrossingRegionEndStillFaults(void)
+{
+    bal_cpu_t cpu  = {};
+    cpu.x[0]       = 0xFFAULL; // 6 bytes readable, 8 requested
+
+    TEST_ASSERT_EQUAL(BAL_ERROR_MEMORY_FAULT,
+                      run_single_guest_instruction_status(LDR_X1_X0_U0, &cpu));
+}
+
 int
 main(void)
 {
@@ -313,6 +369,10 @@ main(void)
     RUN_TEST(test_BalTier1Ldr_ByteUnsignedOffsetScalesByOne);
     RUN_TEST(test_BalTier1Ldr_HalfwordUnsignedOffsetScalesByTwo);
     RUN_TEST(test_BalTier1Ldr_WordUnsignedOffsetScalesByAccessSize);
+    RUN_TEST(test_BalTier1Ldr_ReadEndingExactlyAtRegionEndSucceeds);
+    RUN_TEST(test_BalTier1Ldr_ByteAtLastByteOfRegionSucceedsWhereWiderReadWouldNot);
+    RUN_TEST(test_BalTier1Ldr_HalfwordReadCrossingRegionEndFaults);
+    RUN_TEST(test_BalTier1Ldr_ReadCrossingRegionEndStillFaults);
 
     return UNITY_END();
 }

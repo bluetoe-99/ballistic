@@ -85,7 +85,7 @@ static void block_cache_insert(block_cache_set_t *BAL_RESTRICT cache,
                                void                           *host_code);
 
 /// Helper function which gets called by LDR instructions.
-static uint64_t guest_read(void *context, uint64_t guest_address);
+static uint64_t guest_read(void *context, uint64_t guest_address, uint64_t read_size);
 
 BAL_COLD bal_error_t
 bal_engine_init(bal_engine_t *BAL_RESTRICT                 engine,
@@ -615,13 +615,22 @@ block_cache_insert(block_cache_set_t *BAL_RESTRICT cache,
 }
 
 static uint64_t
-guest_read(void *context, const uint64_t guest_address)
+guest_read(void *context, const uint64_t guest_address, const uint64_t read_size)
 {
     bal_engine_t *BAL_RESTRICT engine = (bal_engine_t *)context;
 
     if (BAL_UNLIKELY(NULL == engine))
     {
         BAL_LOG_ERROR(&bal_thread_logger, "Aborting function: engine is NULL.");
+        return 0U;
+    }
+
+    if (BAL_UNLIKELY(0ULL == read_size || sizeof(uint64_t) < read_size))
+    {
+        BAL_LOG_ERROR(&bal_thread_logger,
+                      "Aborting function: read size (%llu) is not within [1, 8].",
+                      (unsigned long long)read_size);
+        engine->status = BAL_ERROR_INVALID_ARGUMENT;
         return 0U;
     }
 
@@ -652,16 +661,16 @@ guest_read(void *context, const uint64_t guest_address)
         return 0U;
     }
 
-    if (BAL_UNLIKELY(max_readable_bytes < sizeof(uint64_t)))
+    if (BAL_UNLIKELY(max_readable_bytes < read_size))
     {
         BAL_LOG_ERROR(&bal_thread_logger,
-                      "Aborting function: max_readable_bytes (%u) is less than sizeof(uint64_t)",
-                      max_readable_bytes);
+                      "Aborting function: max_readable_bytes (%llu) is less than the read size (%llu)",
+                      (unsigned long long)max_readable_bytes, (unsigned long long)read_size);
         engine->status = BAL_ERROR_MEMORY_FAULT;
         return 0U;
     }
 
     uint64_t value = 0U;
-    (void)memcpy(&value, host_pointer, sizeof(value));
+    (void)memcpy(&value, host_pointer, (size_t)read_size);
     return value;
 }

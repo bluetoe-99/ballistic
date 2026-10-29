@@ -13,11 +13,13 @@
 
 #define BAL_X86_ABI_ARG1 BAL_X86_RCX
 #define BAL_X86_ABI_ARG2 BAL_X86_RDX
+#define BAL_X86_ABI_ARG3 BAL_X86_R8
 
 #else
 
 #define BAL_X86_ABI_ARG1 BAL_X86_RDI
 #define BAL_X86_ABI_ARG2 BAL_X86_RSI
+#define BAL_X86_ABI_ARG3 BAL_X86_RDX
 
 #endif
 
@@ -1658,6 +1660,15 @@ translate_ldr(bal_tier1_compiler_t                     *compiler,
         .source      = ASSEMBLER_TEMPORARY_REGISTER,
     };
     bal_sliding_window_push(&compiler->window, mov_arg2_macro);
+
+    // Third argument: the access width in bytes, 1 << instruction bits 31-30. The engine
+    // faults on this width instead of always demanding 8 readable bytes, as the reference does.
+    const bal_x86_macro_t mov_arg3_macro = {
+        .opcode              = BAL_X86_MACRO_MOV_REGISTER_IMMEDIATE,
+        .destination         = BAL_X86_ABI_ARG3,
+        .immediate_or_offset = 1ULL << ((instruction >> 30) & 0x3U),
+    };
+    bal_sliding_window_push(&compiler->window, mov_arg3_macro);
 
     const bal_x86_macro_t load_guest_read_function_pointer_macro = {
         .opcode              = BAL_X86_MACRO_LOAD,
